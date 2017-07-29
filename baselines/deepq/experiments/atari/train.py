@@ -11,7 +11,7 @@ import baselines.common.tf_util as U
 
 from baselines import logger
 from baselines import deepq
-from baselines.deepq.replay_buffer import ReplayBuffer, PrioritizedReplayBuffer
+from baselines.deepq.replay_buffer import * #ReplayBuffer, PrioritizedReplayBuffer
 from baselines.common.misc_util import (
     boolean_flag,
     pickle_load,
@@ -54,6 +54,7 @@ def parse_args():
     parser.add_argument("--prioritized-alpha", type=float, default=0.6, help="alpha parameter for prioritized replay buffer")
     parser.add_argument("--prioritized-beta0", type=float, default=0.4, help="initial value of beta parameters for prioritized replay")
     parser.add_argument("--prioritized-eps", type=float, default=1e-6, help="eps parameter for prioritized replay buffer")
+    parser.add_argument("--demo-trans-size", type=int, default=int(50000), help="number of demo transitions")
     # Checkpointing
     parser.add_argument("--save-dir", type=str, default=None, help="directory in which training state and model should be saved.")
     parser.add_argument("--save-azure-container", type=str, default=None,
@@ -164,10 +165,11 @@ if __name__ == '__main__':
         ], outside_value=0.01)
 
         if args.prioritized:
-            replay_buffer = PrioritizedReplayBuffer(args.replay_buffer_size, args.prioritized_alpha)
+            # replay_buffer = PrioritizedReplayBuffer(args.replay_buffer_size, args.prioritized_alpha)
+            replay_buffer = PrioritizedReplayBuffer(args.replay_buffer_size, args.demo_trans_size, args.prioritized_alpha)
             beta_schedule = LinearSchedule(approximate_num_iters, initial_p=args.prioritized_beta0, final_p=1.0)
         else:
-            replay_buffer = ReplayBuffer(args.replay_buffer_size)
+            replay_buffer = ReplayBuffer(args.replay_buffer_size, args.demo_trans_size)
 
         U.initialize()
         update_target()
