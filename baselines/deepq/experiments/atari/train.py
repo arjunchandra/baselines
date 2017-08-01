@@ -54,13 +54,19 @@ def parse_args():
     parser.add_argument("--prioritized-alpha", type=float, default=0.6, help="alpha parameter for prioritized replay buffer")
     parser.add_argument("--prioritized-beta0", type=float, default=0.4, help="initial value of beta parameters for prioritized replay")
     parser.add_argument("--prioritized-eps", type=float, default=1e-6, help="eps parameter for prioritized replay buffer")
-    parser.add_argument("--demo-trans-size", type=int, default=int(50000), help="number of demo transitions")
     # Checkpointing
     parser.add_argument("--save-dir", type=str, default=None, help="directory in which training state and model should be saved.")
     parser.add_argument("--save-azure-container", type=str, default=None,
                         help="It present data will saved/loaded from Azure. Should be in format ACCOUNT_NAME:ACCOUNT_KEY:CONTAINER")
     parser.add_argument("--save-freq", type=int, default=1e6, help="save model once every time this many iterations are completed")
     boolean_flag(parser, "load-on-start", default=True, help="if true and model was previously saved then training will be resumed")
+    # Demonstration
+    boolean_flag(parser, "demo", default=False, help="whether or not to use demonstration data")
+    boolean_flag(parser, "demo_db", default=False, help="whether or not to get demonstration data from db")
+    parser.add_argument("--demo-trans-size", type=int, default=int(20000), help="number of demo transitions")
+    parser.add_argument("--demo-model-dir", type=str, default=None, help="load demonstration model from this directory")
+    boolean_flag(parser, "stochastic", default=True, help="whether or not to use stochastic actions according to models eps value")
+    parser.add_argument("--pre-train-steps", type=int, default=int(750000), help="number of steps to learn from demo transitions alone")
     return parser.parse_args()
 
 
@@ -138,11 +144,56 @@ if __name__ == '__main__':
         env = gym.wrappers.Monitor(env, os.path.join(savedir, 'gym_monitor'), force=True)
 
     if savedir:
+        # os.makedirs(savedir, exist_ok=True)
         with open(os.path.join(savedir, 'args.json'), 'w') as f:
             json.dump(vars(args), f)
 
     with U.make_session(4) as sess:
-        # Create training graph and replay buffer
+        # Create replay buffer
+        if args.prioritized:
+            approximate_num_iters = args.num_steps / 4
+            exploration = PiecewiseSchedule([
+                (0, 1.0),
+                (approximate_num_iters / 50, 0.1),
+                (approximate_num_iters / 5, 0.01)
+            ], outside_value=0.01)
+            # replay_buffer = PrioritizedReplayBuffer(args.replay_buffer_size, args.prioritized_alpha)
+            replay_buffer = PrioritizedReplayBuffer(args.replay_buffer_size, args.demo_trans_size, args.prioritized_alpha)
+            beta_schedule = LinearSchedule(approximate_num_iters, initial_p=args.prioritized_beta0, final_p=1.0)
+        else:
+            replay_buffer = ReplayBuffer(args.replay_buffer_size, args.demo_trans_size)
+        
+        # Fill replay buffer with demonstration data
+        if args.demo:
+            if args.demo_db:
+                # Use demo data in db (not implemented!)
+                # connect to db
+                # repeat:
+                # fetch (s, a, r, s, done) transition
+                # replay_buffer.add(obs, action, rew, new_obs, float(done))
+                # until args.demo_trans_size transitions added
+                pass
+            else:
+                # Use pre-trained model to get demo data
+                act = deepq.build_act(
+                    make_obs_ph=lambda name: U.Uint8Input(env.observation_space.shape, name=name),
+                    q_func=dueling_model if args.dueling else model,
+                    num_actions=env.action_space.n
+                    )
+                U.load_state(os.path.join(args.demo_model_dir, "saved"))
+                logger.log("Adding demonstration data to replay buffer.")
+                obs = env.reset()
+                for i in range(1, args.demo_trans_size + 1):
+                    action = act(np.array(obs)[None], stochastic=args.stochastic)[0]
+                    new_obs, rew, done, info = env.step(action)
+                    replay_buffer.add(obs, action, rew, new_obs, float(done))
+                    obs = new_obs
+                    if i % 1000 == 0 and i != 0:
+                        logger.log("Added " + str(i) + " of " + str(args.demo_trans_size) + " demo transitions")
+                    if done:
+                        obs = env.reset()
+
+        # Create training graph
         def model_wrapper(img_in, num_actions, scope, **kwargs):
             actual_model = dueling_model if args.dueling else model
             return actual_model(img_in, num_actions, scope, layer_norm=args.layer_norm, **kwargs)
@@ -154,22 +205,9 @@ if __name__ == '__main__':
             gamma=0.99,
             grad_norm_clipping=10,
             double_q=args.double_q,
-            param_noise=args.param_noise
+            param_noise=args.param_noise,
+            scope='deepq-train'
         )
-
-        approximate_num_iters = args.num_steps / 4
-        exploration = PiecewiseSchedule([
-            (0, 1.0),
-            (approximate_num_iters / 50, 0.1),
-            (approximate_num_iters / 5, 0.01)
-        ], outside_value=0.01)
-
-        if args.prioritized:
-            # replay_buffer = PrioritizedReplayBuffer(args.replay_buffer_size, args.prioritized_alpha)
-            replay_buffer = PrioritizedReplayBuffer(args.replay_buffer_size, args.demo_trans_size, args.prioritized_alpha)
-            beta_schedule = LinearSchedule(approximate_num_iters, initial_p=args.prioritized_beta0, final_p=1.0)
-        else:
-            replay_buffer = ReplayBuffer(args.replay_buffer_size, args.demo_trans_size)
 
         U.initialize()
         update_target()
@@ -187,6 +225,9 @@ if __name__ == '__main__':
         obs = env.reset()
         num_iters_since_reset = 0
         reset = True
+
+        # Get and add demonstration data to replay buffer
+
 
         # Main trianing loop
         while True:
