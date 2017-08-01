@@ -172,7 +172,8 @@ if __name__ == '__main__':
                 # fetch (s, a, r, s, done) transition
                 # replay_buffer.add(obs, action, rew, new_obs, float(done))
                 # until args.demo_trans_size transitions added
-                pass
+                logger.log("Needs to be implemented. See comments.")
+                exit(1)
             else:
                 # Use pre-trained model to get demo data
                 act = deepq.build_act(
@@ -212,6 +213,7 @@ if __name__ == '__main__':
         U.initialize()
         update_target()
         num_iters = 0
+        num_iters_pre_train = 0
 
         # Load the model
         state = maybe_load_model(savedir, container)
@@ -226,49 +228,49 @@ if __name__ == '__main__':
         num_iters_since_reset = 0
         reset = True
 
-        # Get and add demonstration data to replay buffer
-
-
         # Main trianing loop
         while True:
             num_iters += 1
+            num_iters_pre_train += 1
             num_iters_since_reset += 1
 
-            # Take action and store transition in the replay buffer.
-            kwargs = {}
-            if not args.param_noise:
-                update_eps = exploration.value(num_iters)
-                update_param_noise_threshold = 0.
-            else:
-                if args.param_noise_reset_freq > 0 and num_iters_since_reset > args.param_noise_reset_freq:
-                    # Reset param noise policy since we have exceeded the maximum number of steps without a reset.
+            if num_iters_pre_train > args.pre_train_steps:
+                # Take action and store transition in the replay buffer.
+                kwargs = {}
+                if not args.param_noise:
+                    update_eps = exploration.value(num_iters)
+                    update_param_noise_threshold = 0.
+                else:
+                    if args.param_noise_reset_freq > 0 and num_iters_since_reset > args.param_noise_reset_freq:
+                        # Reset param noise policy since we have exceeded the maximum number of steps without a reset.
+                        reset = True
+    
+                    update_eps = 0.01  # ensures that we cannot get stuck completely
+                    if args.param_noise_threshold >= 0.:
+                        update_param_noise_threshold = args.param_noise_threshold
+                    else:
+                        # Compute the threshold such that the KL divergence between perturbed and non-perturbed
+                        # policy is comparable to eps-greedy exploration with eps = exploration.value(t).
+                        # See Appendix C.1 in Parameter Space Noise for Exploration, Plappert et al., 2017
+                        # for detailed explanation.
+                        update_param_noise_threshold = -np.log(1. - exploration.value(num_iters) + exploration.value(num_iters) / float(env.action_space.n))
+                    kwargs['reset'] = reset
+                    kwargs['update_param_noise_threshold'] = update_param_noise_threshold
+                    kwargs['update_param_noise_scale'] = (num_iters % args.param_noise_update_freq == 0)
+    
+                action = act(np.array(obs)[None], update_eps=update_eps, **kwargs)[0]
+                reset = False
+                new_obs, rew, done, info = env.step(action)
+                replay_buffer.add(obs, action, rew, new_obs, float(done))
+                obs = new_obs
+                if done:
+                    num_iters_since_reset = 0
+                    obs = env.reset()
                     reset = True
 
-                update_eps = 0.01  # ensures that we cannot get stuck completely
-                if args.param_noise_threshold >= 0.:
-                    update_param_noise_threshold = args.param_noise_threshold
-                else:
-                    # Compute the threshold such that the KL divergence between perturbed and non-perturbed
-                    # policy is comparable to eps-greedy exploration with eps = exploration.value(t).
-                    # See Appendix C.1 in Parameter Space Noise for Exploration, Plappert et al., 2017
-                    # for detailed explanation.
-                    update_param_noise_threshold = -np.log(1. - exploration.value(num_iters) + exploration.value(num_iters) / float(env.action_space.n))
-                kwargs['reset'] = reset
-                kwargs['update_param_noise_threshold'] = update_param_noise_threshold
-                kwargs['update_param_noise_scale'] = (num_iters % args.param_noise_update_freq == 0)
-
-            action = act(np.array(obs)[None], update_eps=update_eps, **kwargs)[0]
-            reset = False
-            new_obs, rew, done, info = env.step(action)
-            replay_buffer.add(obs, action, rew, new_obs, float(done))
-            obs = new_obs
-            if done:
-                num_iters_since_reset = 0
-                obs = env.reset()
-                reset = True
-
-            if (num_iters > max(5 * args.batch_size, args.replay_buffer_size // 20) and
-                    num_iters % args.learning_freq == 0):
+            if ((num_iters_pre_train <= args.pre_train_steps) or 
+            ((num_iters > max(5 * args.batch_size, args.replay_buffer_size // 20) and
+                    num_iters % args.learning_freq == 0))):
                 # Sample a bunch of transitions from replay buffer
                 if args.prioritized:
                     experience = replay_buffer.sample(args.batch_size, beta=beta_schedule.value(num_iters))
@@ -302,21 +304,24 @@ if __name__ == '__main__':
             if info["steps"] > args.num_steps:
                 break
 
-            if done:
-                steps_left = args.num_steps - info["steps"]
-                completion = np.round(info["steps"] / args.num_steps, 1)
-
-                logger.record_tabular("% completion", completion)
-                logger.record_tabular("steps", info["steps"])
-                logger.record_tabular("iters", num_iters)
-                logger.record_tabular("episodes", len(info["rewards"]))
-                logger.record_tabular("reward (100 epi mean)", np.mean(info["rewards"][-100:]))
-                logger.record_tabular("exploration", exploration.value(num_iters))
-                if args.prioritized:
-                    logger.record_tabular("max priority", replay_buffer._max_priority)
-                fps_estimate = (float(steps_per_iter) / (float(iteration_time_est) + 1e-6)
-                                if steps_per_iter._value is not None else "calculating...")
-                logger.dump_tabular()
-                logger.log()
-                logger.log("ETA: " + pretty_eta(int(steps_left / fps_estimate)))
-                logger.log()
+            if num_iters_pre_train > args.pre_train_steps:
+                if done:
+                    steps_left = args.num_steps - info["steps"]
+                    completion = np.round(info["steps"] / args.num_steps, 1)
+    
+                    logger.record_tabular("% completion", completion)
+                    logger.record_tabular("steps", info["steps"])
+                    logger.record_tabular("iters", num_iters)
+                    logger.record_tabular("episodes", len(info["rewards"]))
+                    logger.record_tabular("reward (100 epi mean)", np.mean(info["rewards"][-100:]))
+                    logger.record_tabular("exploration", exploration.value(num_iters))
+                    if args.prioritized:
+                        logger.record_tabular("max priority", replay_buffer._max_priority)
+                    fps_estimate = (float(steps_per_iter) / (float(iteration_time_est) + 1e-6)
+                                    if steps_per_iter._value is not None else "calculating...")
+                    logger.dump_tabular()
+                    logger.log()
+                    logger.log("ETA: " + pretty_eta(int(steps_left / fps_estimate)))
+                    logger.log()
+            else:
+                logger.log("Pre-training step " + str(num_iters_pre_train) + " of " + str(args.pre_train_steps) + " complete")
