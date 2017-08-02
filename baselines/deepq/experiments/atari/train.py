@@ -63,10 +63,13 @@ def parse_args():
     # Demonstration
     boolean_flag(parser, "demo", default=False, help="whether or not to use demonstration data")
     boolean_flag(parser, "demo_db", default=False, help="whether or not to get demonstration data from db")
-    parser.add_argument("--demo-trans-size", type=int, default=int(20000), help="number of demo transitions")
+    parser.add_argument("--demo-trans-size", type=int, default=int(6000), help="number of demo transitions")
     parser.add_argument("--demo-model-dir", type=str, default=None, help="load demonstration model from this directory")
     boolean_flag(parser, "stochastic", default=True, help="whether or not to use stochastic actions according to models eps value")
     parser.add_argument("--pre-train-steps", type=int, default=int(750000), help="number of steps to learn from demo transitions alone")
+    parser.add_argument("--margin-loss-coeff", type=float, default=1.0, help="margin loss coefficient")
+    parser.add_argument("--l2-loss-coeff", type=float, default=1e-5, help="l2 regularisation coefficient")
+    parser.add_argument("--expert-margin", type=float, default=0.8, help="margin with which expert action values to be above other values")
     return parser.parse_args()
 
 
@@ -185,6 +188,7 @@ if __name__ == '__main__':
                 logger.log("Adding demonstration data to replay buffer.")
                 obs = env.reset()
                 for i in range(1, args.demo_trans_size + 1):
+                    # env.unwrapped.render()
                     action = act(np.array(obs)[None], stochastic=args.stochastic)[0]
                     new_obs, rew, done, info = env.step(action)
                     replay_buffer.add(obs, action, rew, new_obs, float(done))
@@ -207,7 +211,11 @@ if __name__ == '__main__':
             grad_norm_clipping=10,
             double_q=args.double_q,
             param_noise=args.param_noise,
-            scope='deepq-train'
+            scope='deepq-train',
+            demonstration=args.demo,
+            margin_loss_coeff=args.margin_loss_coeff, 
+            l2_loss_coeff=args.l2_loss_coeff, 
+            expert_margin=args.expert_margin
         )
 
         U.initialize()

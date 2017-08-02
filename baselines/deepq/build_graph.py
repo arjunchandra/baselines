@@ -280,7 +280,8 @@ def build_act_with_param_noise(make_obs_ph, q_func, num_actions, scope="deepq", 
 
 
 def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=None, gamma=1.0,
-    double_q=True, scope="deepq", reuse=None, param_noise=False, param_noise_filter_func=None):
+    double_q=True, scope="deepq", reuse=None, param_noise=False, param_noise_filter_func=None, 
+    demonstration=False, margin_loss_coeff=0.0, l2_loss_coeff=0.0, expert_margin=0.0):
     """Creates the train function:
 
     Parameters
@@ -319,6 +320,16 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
     param_noise_filter_func: tf.Variable -> bool
         function that decides whether or not a variable should be perturbed. Only applicable
         if param_noise is True. If set to None, default_param_noise_filter is used by default.
+    
+    Following https://arxiv.org/abs/1704.03732:
+    demonstration: bool
+        whether or not to use DQfD loss
+    margin_loss_coeff: float 
+        margin loss coefficient
+    l2_loss_coeff: float
+        l2 regularisation coefficient 
+    expert_margin: float
+        margin with which expert action values to be above other values
 
     Returns
     -------
@@ -357,8 +368,10 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
         q_tp1 = q_func(obs_tp1_input.get(), num_actions, scope="target_q_func")
         target_q_func_vars = U.scope_vars(U.absolute_scope_name("target_q_func"))
 
+        one_hot_act = tf.one_hot(act_t_ph, num_actions)
+        
         # q scores for actions which we know were selected in the given state.
-        q_t_selected = tf.reduce_sum(q_t * tf.one_hot(act_t_ph, num_actions), 1)
+        q_t_selected = tf.reduce_sum(q_t * one_hot_act, 1)
 
         # compute estimate of best possible value starting from state at t + 1
         if double_q:
@@ -377,14 +390,28 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
         errors = U.huber_loss(td_error)
         weighted_error = tf.reduce_mean(importance_weights_ph * errors)
 
+        if demonstration:
+            print("compiling dqfd loss")
+            # large margin classification loss 
+            inverse_one_hot_act = tf.ones_like(q_t) - one_hot_act
+            margin_errors = tf.reduce_max(q_t + inverse_one_hot_act * expert_margin, 1) - q_t_selected
+            margin_loss = tf.reduce_mean(margin_errors)
+
+            # l2 regularisation loss 
+            l2_loss = U.l2loss(q_func_vars)
+
+            total_loss = weighted_error + margin_loss_coeff * margin_loss + l2_loss_coeff * l2_loss
+        else:
+            total_loss = weighted_error
+
         # compute optimization op (potentially with gradient clipping)
         if grad_norm_clipping is not None:
             optimize_expr = U.minimize_and_clip(optimizer,
-                                                weighted_error,
+                                                total_loss,
                                                 var_list=q_func_vars,
                                                 clip_val=grad_norm_clipping)
         else:
-            optimize_expr = optimizer.minimize(weighted_error, var_list=q_func_vars)
+            optimize_expr = optimizer.minimize(total_loss, var_list=q_func_vars)
 
         # update_target_fn will be called periodically to copy Q network to target Q network
         update_target_expr = []
