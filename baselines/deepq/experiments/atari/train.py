@@ -51,9 +51,9 @@ def parse_args():
     boolean_flag(parser, "param-noise", default=False, help="whether or not to use parameter space noise for exploration")
     boolean_flag(parser, "layer-norm", default=False, help="whether or not to use layer norm (should be True if param_noise is used)")
     boolean_flag(parser, "gym-monitor", default=False, help="whether or not to use a OpenAI Gym monitor (results in slower training due to video recording)")
-    parser.add_argument("--prioritized-alpha", type=float, default=0.6, help="alpha parameter for prioritized replay buffer")
-    parser.add_argument("--prioritized-beta0", type=float, default=0.4, help="initial value of beta parameters for prioritized replay")
-    parser.add_argument("--prioritized-eps", type=float, default=1e-6, help="eps parameter for prioritized replay buffer")
+    parser.add_argument("--prioritized-alpha", type=float, default=0.4, help="alpha parameter for prioritized replay buffer")
+    parser.add_argument("--prioritized-beta0", type=float, default=0.6, help="initial value of beta parameters for prioritized replay")
+    parser.add_argument("--prioritized-eps", type=float, default=1e-3, help="eps parameter for prioritized replay buffer")
     # Checkpointing
     parser.add_argument("--save-dir", type=str, default=None, help="directory in which training state and model should be saved.")
     parser.add_argument("--save-azure-container", type=str, default=None,
@@ -70,6 +70,7 @@ def parse_args():
     parser.add_argument("--margin-loss-coeff", type=float, default=1.0, help="margin loss coefficient")
     parser.add_argument("--l2-loss-coeff", type=float, default=1e-5, help="l2 regularisation coefficient")
     parser.add_argument("--expert-margin", type=float, default=0.8, help="margin with which expert action values to be above other values")
+    parser.add_argument("--prioritized-eps-d", type=float, default=1.0, help="eps parameter for demo transitions in prioritized replay buffer")
     return parser.parse_args()
 
 
@@ -160,14 +161,15 @@ if __name__ == '__main__':
                 (approximate_num_iters / 50, 0.1),
                 (approximate_num_iters / 5, 0.01)
             ], outside_value=0.01)
-            # replay_buffer = PrioritizedReplayBuffer(args.replay_buffer_size, args.prioritized_alpha)
             replay_buffer = PrioritizedReplayBuffer(args.replay_buffer_size, args.demo_trans_size, args.prioritized_alpha)
             beta_schedule = LinearSchedule(approximate_num_iters, initial_p=args.prioritized_beta0, final_p=1.0)
+            # Function to return transition priority bonus
+            set_p_eps = lambda x: args.prioritized_eps_d if x < args.demo_trans_size else args.prioritized_eps
         else:
             replay_buffer = ReplayBuffer(args.replay_buffer_size, args.demo_trans_size)
         
-        # Fill replay buffer with demonstration data
-        if args.demo:
+        if args.demo:            
+            # Fill replay buffer with demonstration data
             if args.demo_db:
                 # Use demo data in db (not implemented!)
                 # connect to db
@@ -222,7 +224,7 @@ if __name__ == '__main__':
         update_target()
         num_iters = 0
         num_iters_pre_train = 0
-
+        
         # Load the model
         state = maybe_load_model(savedir, container)
         if state is not None:
@@ -286,12 +288,15 @@ if __name__ == '__main__':
                 else:
                     obses_t, actions, rewards, obses_tp1, dones = replay_buffer.sample(args.batch_size)
                     weights = np.ones_like(rewards)
-                # Minimize the error in Bellman's equation and compute TD-error
+                # Minimize the error in Bellman's equation (+ demo losses) and compute TD-error
                 td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights)
                 # Update the priorities in the replay buffer
                 if args.prioritized:
-                    new_priorities = np.abs(td_errors) + args.prioritized_eps
+                    # Add bonus to demo transition priorities
+                    p_eps =np.array([set_p_eps(idx) for idx in batch_idxes])
+                    new_priorities = np.abs(td_errors) + p_eps
                     replay_buffer.update_priorities(batch_idxes, new_priorities)
+
             # Update target network.
             if num_iters % args.target_update_freq == 0:
                 update_target()
