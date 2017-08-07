@@ -158,8 +158,8 @@ if __name__ == '__main__':
         # Set up exploration schedule
         approximate_num_iters = args.num_steps / 4
         exploration = PiecewiseSchedule([
-            (0, 1.0),
-            (approximate_num_iters / 50, 0.1),
+            (0, 0.01),
+            (approximate_num_iters / 50, 0.01),
             (approximate_num_iters / 5, 0.01)
         ], outside_value=0.01)
 
