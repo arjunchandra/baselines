@@ -153,14 +153,16 @@ if __name__ == '__main__':
             json.dump(vars(args), f)
 
     with U.make_session(4) as sess:
+        # Set up exploration schedule
+        approximate_num_iters = args.num_steps / 4
+        exploration = PiecewiseSchedule([
+            (0, 0.01),
+            (approximate_num_iters / 50, 0.01),
+            (approximate_num_iters / 5, 0.01)
+        ], outside_value=0.01)
+
         # Create replay buffer
         if args.prioritized:
-            approximate_num_iters = args.num_steps / 4
-            exploration = PiecewiseSchedule([
-                (0, 1.0),
-                (approximate_num_iters / 50, 0.1),
-                (approximate_num_iters / 5, 0.01)
-            ], outside_value=0.01)
             replay_buffer = PrioritizedReplayBuffer(args.replay_buffer_size, args.demo_trans_size, args.prioritized_alpha)
             beta_schedule = LinearSchedule(approximate_num_iters, initial_p=args.prioritized_beta0, final_p=1.0)
             # Function to return transition priority bonus
