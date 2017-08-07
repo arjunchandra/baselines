@@ -329,17 +329,27 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
         margin loss coefficient
     l2_loss_coeff: float
         l2 regularisation coefficient 
+    n_step_loss_coeff: float
+        n-step loss coefficient
     expert_margin: float
         margin with which expert action values to be above other values
+    n_step: int
+        n in n-step returns
 
     Returns
     -------
     act: (tf.Variable, bool, float) -> tf.Variable
         function to select and action given observation.
 `       See the top of the file for details.
+    
     train: (object, np.array, np.array, object, np.array, np.array) -> np.array
         optimize the error in Bellman's equation.
 `       See the top of the file for details.
+        --OR--
+    train: (object, np.array, np.array, object, np.array, np.array, np.array, object, np.array, np.array) -> np.array
+        optimize the error in Bellman's equation + n-step loss + margin loss + l2 loss
+        https://arxiv.org/abs/1704.03732
+    
     update_target: () -> ()
         copy the parameters from optimized Q function to the target Q function.
 `       See the top of the file for details.

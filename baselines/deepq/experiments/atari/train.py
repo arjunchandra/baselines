@@ -63,10 +63,10 @@ def parse_args():
     # Demonstration
     boolean_flag(parser, "demo", default=False, help="whether or not to use demonstration data")
     boolean_flag(parser, "demo_db", default=False, help="whether or not to get demonstration data from db")
-    parser.add_argument("--demo-trans-size", type=int, default=int(6000), help="number of demo transitions")
+    parser.add_argument("--demo-trans-size", type=int, default=int(8000), help="number of demo transitions")
     parser.add_argument("--demo-model-dir", type=str, default=None, help="load demonstration model from this directory")
     boolean_flag(parser, "stochastic", default=True, help="whether or not to use stochastic actions according to models eps value")
-    parser.add_argument("--pre-train-steps", type=int, default=int(50000), help="number of steps to learn from demo transitions alone")
+    parser.add_argument("--pre-train-steps", type=int, default=int(750000), help="number of steps to learn from demo transitions alone")
     parser.add_argument("--margin-loss-coeff", type=float, default=1.0, help="margin loss coefficient")
     parser.add_argument("--l2-loss-coeff", type=float, default=1e-5, help="l2 regularisation coefficient")
     parser.add_argument("--n-step-loss-coeff", type=float, default=1.0, help="n-step loss coefficient")
@@ -347,4 +347,5 @@ if __name__ == '__main__':
                     logger.log("ETA: " + pretty_eta(int(steps_left / fps_estimate)))
                     logger.log()
             else:
-                logger.log("Pre-training step " + str(num_iters_pre_train) + " of " + str(args.pre_train_steps) + " complete")
+                if num_iters_pre_train % 50000:
+                    logger.log("Pre-training step " + str(num_iters_pre_train) + " of " + str(args.pre_train_steps) + " complete")

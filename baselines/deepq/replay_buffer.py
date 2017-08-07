@@ -203,8 +203,13 @@ class ReplayBuffer(object):
             n-step rewards vector batch
         tpn_obs_batch: np.array
             tpn set of observations
-        n_tpn_step_batch: np.arrya
-            n in n-step indicator
+        n_tpn_step_batch: np.array
+            n in n-step indicator to indicate if trajectory sampled 
+            is unfinished or done -- trajectory is unfinished if 
+            there are no more transitions to cover all n steps
+        n_step_done_mask: np.array
+            n_step_done_mask[i] = 1 if trajectory sampled reaches 
+            the end of an episode, and 0 otherwise.
         """
         idxes = [random.randint(0, len(self._storage) - 1) for _ in range(batch_size)]
         return self._encode_trajectory(idxes, n_step)
@@ -347,8 +352,13 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             n-step rewards vector batch
         tpn_obs_batch: np.array
             tpn set of observations
-        n_tpn_step_batch: np.arrya
-            n in n-step indicator
+        n_tpn_step_batch: np.array
+            n in n-step indicator to indicate if trajectory sampled 
+            is unfinished or done -- trajectory is unfinished if 
+            there are no more transitions to cover all n steps
+        n_step_done_mask: np.array
+            n_step_done_mask[i] = 1 if trajectory sampled reaches 
+            the end of an episode, and 0 otherwise.
         weights: np.array
             Array of shape (batch_size,) and dtype np.float32
             denoting importance weight of each sampled transition
