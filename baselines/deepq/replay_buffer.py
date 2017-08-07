@@ -51,6 +51,104 @@ class ReplayBuffer(object):
             dones.append(done)
         return np.array(obses_t), np.array(actions), np.array(rewards), np.array(obses_tp1), np.array(dones)
 
+    def _encode_trajectory(self, idxes, n_step):
+        obses_t, actions, rewards, obses_tp1, dones = [], [], [], [], []
+        n_step_rewards, obses_tpn, n_is, traj_dones = [], [], [], []
+        #n_step = n_step - 1 # nth step is bootstrapped
+        for i in idxes:
+            data = self._storage[i]
+            obs_t, action, reward, obs_tp1, done = data
+            obses_t.append(np.array(obs_t, copy=False))
+            actions.append(np.array(action, copy=False))
+            rewards.append(reward)
+            obses_tp1.append(np.array(obs_tp1, copy=False))
+            dones.append(done)
+            # Get rewards, end states and dones along trajectory starting at i
+            try:
+                # print("getting traj experience")
+                _n_step = 1
+                n_step_rewards_i, obses_tpn_i, n_is_i, traj_done = [], None, None, None
+                if done == 1:
+                    # done - 1 setp return
+                    # print("traj done in 1 step")
+                    n_step_rewards_i.extend([0.0]*(n_step - _n_step))
+                    obses_tpn_i = obs_tp1
+                    n_is_i = _n_step
+                    traj_done = done
+                else:
+                    for j in range(i+1, i+n_step):  
+                        
+                        if i < self._demosize and j >= self._demosize:
+                            n_step_rewards_i.extend([0.0]*(n_step - _n_step))
+                            obses_tpn_i = data[3]
+                            n_is_i = _n_step
+                            traj_done = data[4]
+                            break
+
+                        if j >= len(self._storage):
+                            _j = j % len(self._storage) + self._demosize # cyclic storage
+                        else:
+                            _j = j
+                        
+                        # print(_j)
+                        data_tp1 = self._storage[_j]
+                        if (data[3] != data_tp1[0]):
+                            # unfinished -- last obs exit loop
+                            # print("unfinished")
+                            n_step_rewards_i.extend([0.0]*(n_step - _n_step))
+                            obses_tpn_i = data[3]
+                            n_is_i = _n_step
+                            traj_done = 0
+                            break
+                        
+                        _n_step += 1
+                        
+                        if data_tp1[4] == 1:
+                            # done -- no last obs exit loop
+                            # print("traj done")
+                            n_step_rewards_i.append(data_tp1[2])
+                            n_step_rewards_i.extend([0.0]*(n_step - _n_step))
+                            obses_tpn_i = data_tp1[3]
+                            n_is_i = _n_step
+                            traj_done = data_tp1[4]
+                            break
+                        else:
+                            # continue loop
+                            # print("traj continues")
+                            n_step_rewards_i.append(data_tp1[2])
+                            obses_tpn_i = data_tp1[3]
+                            n_is_i = _n_step
+                            traj_done = data_tp1[4]
+                            data = data_tp1
+    
+    
+                        # if j < len(self._storage): # not out of bounds
+                        #     if (data[3] == data_tp1[0]) and data[4] != 1:
+                        #         _n_step += 1 
+                        #         n_step_rewards_i.append(data_tp1[2])
+                        #         data = data_tp1
+                        #         obses_tpn_i = data[3]
+                        #         n_is_i = _n_step
+                        #     else: # exit loop
+                        #         n_step_rewards_i.extend([0.0]*(n_step - _n_step))
+                        #         obses_tpn_i = data[3]
+                        #         n_is_i = _n_step
+                        #         break
+                        # else:
+                        #     n_step_rewards_i.extend([0.0]*(n_step - _n_step))
+                        #     obses_tpn_i = data[3]
+                        #     n_is_i = _n_step
+                        #     break
+                n_step_rewards.append(np.array(n_step_rewards_i, copy=False))
+                obses_tpn.append(np.array(obses_tpn_i, copy=False))
+                n_is.append(np.array(n_is_i, copy=False))
+                traj_dones.append(np.array(traj_done, copy=False))
+            except IndexError:
+                print("Something funky happened accessing replay storage.")
+
+        # print(n_is)
+        return np.array(obses_t), np.array(actions), np.array(rewards), np.array(obses_tp1), np.array(dones), np.array(n_step_rewards), np.array(obses_tpn), np.array(n_is), np.array(traj_dones) 
+
     def sample(self, batch_size):
         """Sample a batch of experiences.
 
@@ -76,6 +174,40 @@ class ReplayBuffer(object):
         idxes = [random.randint(0, len(self._storage) - 1) for _ in range(batch_size)]
         return self._encode_sample(idxes)
 
+    def sample_nstep(self, batch_size, n_step):
+        """Sample a batch of experiences, n-step trajectory rewards, and tpn'th
+        state, where n varies. Trajectory ends after n steps or until done/not 
+        accessible (due to lack of data), whichever happens earlier.
+
+        Parameters
+        ----------
+        batch_size: int
+            How many transitions to sample.
+        n_step: int
+            How many steps to look into the future
+
+        Returns
+        -------
+        obs_batch: np.array
+            batch of observations
+        act_batch: np.array
+            batch of actions executed given obs_batch
+        rew_batch: np.array
+            rewards received as results of executing act_batch
+        next_obs_batch: np.array
+            next set of observations seen after executing act_batch
+        done_mask: np.array
+            done_mask[i] = 1 if executing act_batch[i] resulted in
+            the end of an episode and 0 otherwise.
+        n_step_rewards_batch: np.array
+            n-step rewards vector batch
+        tpn_obs_batch: np.array
+            tpn set of observations
+        n_tpn_step_batch: np.arrya
+            n in n-step indicator
+        """
+        idxes = [random.randint(0, len(self._storage) - 1) for _ in range(batch_size)]
+        return self._encode_trajectory(idxes, n_step)
 
 class PrioritizedReplayBuffer(ReplayBuffer):
     def __init__(self, size, dsize, alpha):
@@ -177,6 +309,68 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         weights = np.array(weights)
         encoded_sample = self._encode_sample(idxes)
         return tuple(list(encoded_sample) + [weights, idxes])
+
+    def sample_nstep(self, batch_size, beta, n_step):
+        """Sample a batch of experiences, n-step trajectory rewards, and tpn'th
+        state, where n varies. Trajectory ends after n steps or until done/not 
+        accessible (due to lack of data), whichever happens earlier.
+
+        compared to ReplayBuffer.sample
+        it also returns importance weights and idxes
+        of sampled experiences.
+
+
+        Parameters
+        ----------
+        batch_size: int
+            How many transitions to sample.
+        beta: float
+            To what degree to use importance weights
+            (0 - no corrections, 1 - full correction)
+        n_step: int
+            How many steps to look into the future
+
+        Returns
+        -------
+        obs_batch: np.array
+            batch of observations
+        act_batch: np.array
+            batch of actions executed given obs_batch
+        rew_batch: np.array
+            rewards received as results of executing act_batch
+        next_obs_batch: np.array
+            next set of observations seen after executing act_batch
+        done_mask: np.array
+            done_mask[i] = 1 if executing act_batch[i] resulted in
+            the end of an episode and 0 otherwise.
+        n_step_rewards_batch: np.array
+            n-step rewards vector batch
+        tpn_obs_batch: np.array
+            tpn set of observations
+        n_tpn_step_batch: np.arrya
+            n in n-step indicator
+        weights: np.array
+            Array of shape (batch_size,) and dtype np.float32
+            denoting importance weight of each sampled transition
+        idxes: np.array
+            Array of shape (batch_size,) and dtype np.int32
+            idexes in buffer of sampled experiences
+        """
+        assert beta > 0
+
+        idxes = self._sample_proportional(batch_size)
+
+        weights = []
+        p_min = self._it_min.min() / self._it_sum.sum()
+        max_weight = (p_min * len(self._storage)) ** (-beta)
+
+        for idx in idxes:
+            p_sample = self._it_sum[idx] / self._it_sum.sum()
+            weight = (p_sample * len(self._storage)) ** (-beta)
+            weights.append(weight / max_weight)
+        weights = np.array(weights)
+        encoded_trajectory = self._encode_trajectory(idxes, n_step)
+        return tuple(list(encoded_trajectory) + [weights, idxes])
 
     def update_priorities(self, idxes, priorities):
         """Update priorities of sampled transitions.

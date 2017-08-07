@@ -281,7 +281,8 @@ def build_act_with_param_noise(make_obs_ph, q_func, num_actions, scope="deepq", 
 
 def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=None, gamma=1.0,
     double_q=True, scope="deepq", reuse=None, param_noise=False, param_noise_filter_func=None, 
-    demonstration=False, margin_loss_coeff=0.0, l2_loss_coeff=0.0, expert_margin=0.0):
+    demonstration=False, margin_loss_coeff=0.0, l2_loss_coeff=0.0, n_step_loss_coeff=0.0, 
+    expert_margin=0.0, n_step=10):
     """Creates the train function:
 
     Parameters
@@ -359,6 +360,12 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
         obs_tp1_input = U.ensure_tf_input(make_obs_ph("obs_tp1"))
         done_mask_ph = tf.placeholder(tf.float32, [None], name="done")
         importance_weights_ph = tf.placeholder(tf.float32, [None], name="weight")
+        if demonstration:
+            # nstep_rewards_ph = U.ensure_tf_input(make_n_step_rewards_ph("n_step_rewards"))
+            nstep_rewards_ph = tf.placeholder(tf.float32, [None, None], name="n_step_rewards")
+            obs_tpn_input = U.ensure_tf_input(make_obs_ph("obs_tpn"))
+            n_tpn_ph = tf.placeholder(tf.float32, [None], name="n_tpn")
+            nstep_done_mask_ph = tf.placeholder(tf.float32, [None], name="n_step_done")
 
         # q network evaluation
         q_t = q_func(obs_t_input.get(), num_actions, scope="q_func", reuse=True)  # reuse parameters from act
@@ -391,7 +398,17 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
         weighted_error = tf.reduce_mean(importance_weights_ph * errors)
 
         if demonstration:
-            print("compiling dqfd loss")
+            print("Compiling dqfd loss")
+            # target q for n-step obsevation
+            q_tpn = q_func(obs_tpn_input.get(), num_actions, scope="target_q_func", reuse=True)
+            if double_q:
+                q_tpn_using_online_net = q_func(obs_tpn_input.get(), num_actions, scope="q_func", reuse=True)
+                q_tpn_best_using_online_net = tf.arg_max(q_tpn_using_online_net, 1)
+                q_tpn_best = tf.reduce_sum(q_tpn * tf.one_hot(q_tpn_best_using_online_net, num_actions), 1)
+            else:
+                q_tpn_best = tf.reduce_max(q_tpn, 1)
+            q_tpn_best_masked = (1.0 - nstep_done_mask_ph) * q_tpn_best
+
             # large margin classification loss 
             inverse_one_hot_act = tf.ones_like(q_t) - one_hot_act
             margin_errors = tf.reduce_max(q_t + inverse_one_hot_act * expert_margin, 1) - q_t_selected
@@ -400,7 +417,13 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
             # l2 regularisation loss 
             l2_loss = U.l2loss(q_func_vars)
 
-            total_loss = weighted_error + margin_loss_coeff * margin_loss + l2_loss_coeff * l2_loss
+            # n-step return loss
+            n_step_gammas = tf.constant([gamma ** i for i in range(1, n_step)])
+            q_t_selected_n_step_target = rew_t_ph + tf.reduce_sum(n_step_gammas * nstep_rewards_ph) + tf.pow(gamma, n_tpn_ph) * q_tpn_best_masked
+            n_step_td_error = q_t_selected - tf.stop_gradient(q_t_selected_n_step_target)
+            n_step_td_loss = U.huber_loss(n_step_td_error)
+
+            total_loss = weighted_error + margin_loss_coeff * margin_loss + l2_loss_coeff * l2_loss + n_step_loss_coeff * n_step_td_loss
         else:
             total_loss = weighted_error
 
@@ -421,18 +444,38 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
         update_target_expr = tf.group(*update_target_expr)
 
         # Create callable functions
-        train = U.function(
-            inputs=[
-                obs_t_input,
-                act_t_ph,
-                rew_t_ph,
-                obs_tp1_input,
-                done_mask_ph,
-                importance_weights_ph
-            ],
-            outputs=td_error,
-            updates=[optimize_expr]
-        )
+        if demonstration:
+            train = U.function(
+                inputs=[
+                    obs_t_input,
+                    act_t_ph,
+                    rew_t_ph,
+                    obs_tp1_input,
+                    done_mask_ph,
+                    importance_weights_ph,
+                    nstep_rewards_ph, 
+                    obs_tpn_input, 
+                    n_tpn_ph,
+                    nstep_done_mask_ph
+                ],
+                outputs=td_error,
+                updates=[optimize_expr]
+            )
+        else:
+            # Create callable functions
+            train = U.function(
+                inputs=[
+                    obs_t_input,
+                    act_t_ph,
+                    rew_t_ph,
+                    obs_tp1_input,
+                    done_mask_ph,
+                    importance_weights_ph
+                ],
+                outputs=td_error,
+                updates=[optimize_expr]
+            )
+
         update_target = U.function([], [], updates=[update_target_expr])
 
         q_values = U.function([obs_t_input], q_t)

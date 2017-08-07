@@ -66,11 +66,13 @@ def parse_args():
     parser.add_argument("--demo-trans-size", type=int, default=int(6000), help="number of demo transitions")
     parser.add_argument("--demo-model-dir", type=str, default=None, help="load demonstration model from this directory")
     boolean_flag(parser, "stochastic", default=True, help="whether or not to use stochastic actions according to models eps value")
-    parser.add_argument("--pre-train-steps", type=int, default=int(750000), help="number of steps to learn from demo transitions alone")
+    parser.add_argument("--pre-train-steps", type=int, default=int(50000), help="number of steps to learn from demo transitions alone")
     parser.add_argument("--margin-loss-coeff", type=float, default=1.0, help="margin loss coefficient")
     parser.add_argument("--l2-loss-coeff", type=float, default=1e-5, help="l2 regularisation coefficient")
+    parser.add_argument("--n-step-loss-coeff", type=float, default=1.0, help="n-step loss coefficient")
     parser.add_argument("--expert-margin", type=float, default=0.8, help="margin with which expert action values to be above other values")
     parser.add_argument("--prioritized-eps-d", type=float, default=1.0, help="eps parameter for demo transitions in prioritized replay buffer")
+    parser.add_argument("--n-step", type=int, default=int(10), help="number of steps agent to look ahead for returns")
     return parser.parse_args()
 
 
@@ -217,7 +219,9 @@ if __name__ == '__main__':
             demonstration=args.demo,
             margin_loss_coeff=args.margin_loss_coeff, 
             l2_loss_coeff=args.l2_loss_coeff, 
-            expert_margin=args.expert_margin
+            n_step_loss_coeff=args.n_step_loss_coeff,
+            expert_margin=args.expert_margin,
+            n_step=args.n_step
         )
 
         U.initialize()
@@ -283,13 +287,19 @@ if __name__ == '__main__':
                     num_iters % args.learning_freq == 0))):
                 # Sample a bunch of transitions from replay buffer
                 if args.prioritized:
-                    experience = replay_buffer.sample(args.batch_size, beta=beta_schedule.value(num_iters))
-                    (obses_t, actions, rewards, obses_tp1, dones, weights, batch_idxes) = experience
+                    # experience = replay_buffer.sample(args.batch_size, beta=beta_schedule.value(num_iters))
+                    # (obses_t, actions, rewards, obses_tp1, dones, weights, batch_idxes) = experience
+                    experience = replay_buffer.sample_nstep(args.batch_size, beta=beta_schedule.value(num_iters), n_step=args.n_step)
+                    (obses_t, actions, rewards, obses_tp1, dones, nstep_rewards, obses_tpn, n_tpn, nstep_dones, weights, batch_idxes) = experience
+                    # print(nstep_rewards, obses_tpn, n_tpn)
                 else:
-                    obses_t, actions, rewards, obses_tp1, dones = replay_buffer.sample(args.batch_size)
+                    # obses_t, actions, rewards, obses_tp1, dones = replay_buffer.sample(args.batch_size)
+                    experience = replay_buffer.sample_nstep(args.batch_size, n_step=args.n_step)
+                    obses_t, actions, rewards, obses_tp1, dones, nstep_rewards, obses_tpn, n_tpn, nstep_dones = experience
                     weights = np.ones_like(rewards)
                 # Minimize the error in Bellman's equation (+ demo losses) and compute TD-error
-                td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights)
+                # td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights)
+                td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights, nstep_rewards, obses_tpn, n_tpn, nstep_dones)
                 # Update the priorities in the replay buffer
                 if args.prioritized:
                     # Add bonus to demo transition priorities
