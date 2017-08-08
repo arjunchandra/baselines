@@ -349,5 +349,5 @@ if __name__ == '__main__':
                     logger.log("ETA: " + pretty_eta(int(steps_left / fps_estimate)))
                     logger.log()
             else:
-                if num_iters_pre_train % 50000:
+                if num_iters_pre_train % 50000 == 0:
                     logger.log("Pre-training step " + str(num_iters_pre_train) + " of " + str(args.pre_train_steps) + " complete")
