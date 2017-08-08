@@ -65,19 +65,17 @@ class ReplayBuffer(object):
             dones.append(done)
             # Get rewards, end states and dones along trajectory starting at i
             try:
-                # print("getting traj experience")
                 _n_step = 1
                 n_step_rewards_i, obses_tpn_i, n_is_i, traj_done = [], None, None, None
                 if done == 1:
-                    # done - 1 setp return
-                    # print("traj done in 1 step")
+                    # Trajectory done in one step
                     n_step_rewards_i.extend([0.0]*(n_step - _n_step))
                     obses_tpn_i = obs_tp1
                     n_is_i = _n_step
                     traj_done = done
                 else:
-                    for j in range(i+1, i+n_step):  
-                        
+                    for j in range(i+1, i+n_step): 
+                        # Trajectory overshoots demo |dataset|
                         if i < self._demosize and j >= self._demosize:
                             n_step_rewards_i.extend([0.0]*(n_step - _n_step))
                             obses_tpn_i = data[3]
@@ -85,16 +83,15 @@ class ReplayBuffer(object):
                             traj_done = data[4]
                             break
 
+                        # Handling cyclic storage if not demo transition
                         if j >= len(self._storage):
-                            _j = j % len(self._storage) + self._demosize # cyclic storage
+                            _j = j % len(self._storage) + self._demosize
                         else:
                             _j = j
                         
-                        # print(_j)
                         data_tp1 = self._storage[_j]
+                        # Unfinished trajectory -- exit loop
                         if (data[3] != data_tp1[0]):
-                            # unfinished -- last obs exit loop
-                            # print("unfinished")
                             n_step_rewards_i.extend([0.0]*(n_step - _n_step))
                             obses_tpn_i = data[3]
                             n_is_i = _n_step
@@ -104,8 +101,7 @@ class ReplayBuffer(object):
                         _n_step += 1
                         
                         if data_tp1[4] == 1:
-                            # done -- no last obs exit loop
-                            # print("traj done")
+                            # Trajectory complete -- exit loop
                             n_step_rewards_i.append(data_tp1[2])
                             n_step_rewards_i.extend([0.0]*(n_step - _n_step))
                             obses_tpn_i = data_tp1[3]
@@ -113,32 +109,13 @@ class ReplayBuffer(object):
                             traj_done = data_tp1[4]
                             break
                         else:
-                            # continue loop
-                            # print("traj continues")
+                            # Move along trajectory
                             n_step_rewards_i.append(data_tp1[2])
                             obses_tpn_i = data_tp1[3]
                             n_is_i = _n_step
                             traj_done = data_tp1[4]
                             data = data_tp1
-    
-    
-                        # if j < len(self._storage): # not out of bounds
-                        #     if (data[3] == data_tp1[0]) and data[4] != 1:
-                        #         _n_step += 1 
-                        #         n_step_rewards_i.append(data_tp1[2])
-                        #         data = data_tp1
-                        #         obses_tpn_i = data[3]
-                        #         n_is_i = _n_step
-                        #     else: # exit loop
-                        #         n_step_rewards_i.extend([0.0]*(n_step - _n_step))
-                        #         obses_tpn_i = data[3]
-                        #         n_is_i = _n_step
-                        #         break
-                        # else:
-                        #     n_step_rewards_i.extend([0.0]*(n_step - _n_step))
-                        #     obses_tpn_i = data[3]
-                        #     n_is_i = _n_step
-                        #     break
+
                 n_step_rewards.append(np.array(n_step_rewards_i, copy=False))
                 obses_tpn.append(np.array(obses_tpn_i, copy=False))
                 n_is.append(np.array(n_is_i, copy=False))
@@ -146,7 +123,6 @@ class ReplayBuffer(object):
             except IndexError:
                 print("Something funky happened accessing replay storage.")
 
-        # print(n_is)
         return np.array(obses_t), np.array(actions), np.array(rewards), np.array(obses_tp1), np.array(dones), np.array(n_step_rewards), np.array(obses_tpn), np.array(n_is), np.array(traj_dones) 
 
     def sample(self, batch_size):

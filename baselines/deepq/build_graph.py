@@ -409,7 +409,7 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
 
         if demonstration:
             print("Compiling dqfd loss")
-            # target q for n-step obsevation
+            # target q for n-step observation
             q_tpn = q_func(obs_tpn_input.get(), num_actions, scope="target_q_func", reuse=True)
             if double_q:
                 q_tpn_using_online_net = q_func(obs_tpn_input.get(), num_actions, scope="q_func", reuse=True)
