@@ -188,7 +188,9 @@ class ReplayBuffer(object):
             the end of an episode, and 0 otherwise.
         """
         idxes = [random.randint(0, len(self._storage) - 1) for _ in range(batch_size)]
-        return self._encode_trajectory(idxes, n_step)
+        encoded_trajectory = self._encode_trajectory(idxes, n_step)
+        demo_selfgen = [1. if id < self._demosize else 0. for id in idxes]
+        return tuple(list(encoded_trajectory) + [demo_selfgen])
 
 class PrioritizedReplayBuffer(ReplayBuffer):
     def __init__(self, size, dsize, alpha):
@@ -356,7 +358,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             weights.append(weight / max_weight)
         weights = np.array(weights)
         encoded_trajectory = self._encode_trajectory(idxes, n_step)
-        return tuple(list(encoded_trajectory) + [weights, idxes])
+        demo_selfgen = [1. if id < self._demosize else 0. for id in idxes]
+        return tuple(list(encoded_trajectory) + [weights, idxes, demo_selfgen])
 
     def update_priorities(self, idxes, priorities):
         """Update priorities of sampled transitions.

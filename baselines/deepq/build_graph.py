@@ -376,6 +376,7 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
             obs_tpn_input = U.ensure_tf_input(make_obs_ph("obs_tpn"))
             n_tpn_ph = tf.placeholder(tf.float32, [None], name="n_tpn")
             nstep_done_mask_ph = tf.placeholder(tf.float32, [None], name="n_step_done")
+            demo_selfgens_ph = tf.placeholder(tf.float32, [None], name="demo_self_gen_flags")
 
         # q network evaluation
         q_t = q_func(obs_t_input.get(), num_actions, scope="q_func", reuse=True)  # reuse parameters from act
@@ -421,7 +422,7 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
 
             # large margin classification loss 
             inverse_one_hot_act = tf.ones_like(q_t) - one_hot_act
-            margin_errors = tf.reduce_max(q_t + inverse_one_hot_act * expert_margin, 1) - q_t_selected
+            margin_errors = demo_selfgens_ph * (tf.reduce_max(q_t + inverse_one_hot_act * expert_margin, 1) - q_t_selected)
             margin_loss = tf.reduce_mean(margin_errors)
 
             # l2 regularisation loss 
@@ -466,7 +467,8 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
                     nstep_rewards_ph, 
                     obs_tpn_input, 
                     n_tpn_ph,
-                    nstep_done_mask_ph
+                    nstep_done_mask_ph,
+                    demo_selfgens_ph
                 ],
                 outputs=td_error,
                 updates=[optimize_expr]

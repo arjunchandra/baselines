@@ -292,16 +292,16 @@ if __name__ == '__main__':
                     # experience = replay_buffer.sample(args.batch_size, beta=beta_schedule.value(num_iters))
                     # (obses_t, actions, rewards, obses_tp1, dones, weights, batch_idxes) = experience
                     experience = replay_buffer.sample_nstep(args.batch_size, beta=beta_schedule.value(num_iters), n_step=args.n_step)
-                    (obses_t, actions, rewards, obses_tp1, dones, nstep_rewards, obses_tpn, n_tpn, nstep_dones, weights, batch_idxes) = experience
+                    (obses_t, actions, rewards, obses_tp1, dones, nstep_rewards, obses_tpn, n_tpn, nstep_dones, weights, batch_idxes, demo_selfgens) = experience
                     # print(nstep_rewards, obses_tpn, n_tpn)
                 else:
                     # obses_t, actions, rewards, obses_tp1, dones = replay_buffer.sample(args.batch_size)
                     experience = replay_buffer.sample_nstep(args.batch_size, n_step=args.n_step)
-                    obses_t, actions, rewards, obses_tp1, dones, nstep_rewards, obses_tpn, n_tpn, nstep_dones = experience
+                    obses_t, actions, rewards, obses_tp1, dones, nstep_rewards, obses_tpn, n_tpn, nstep_dones, demo_selfgens = experience
                     weights = np.ones_like(rewards)
                 # Minimize the error in Bellman's equation (+ demo losses) and compute TD-error
                 # td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights)
-                td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights, nstep_rewards, obses_tpn, n_tpn, nstep_dones)
+                td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights, nstep_rewards, obses_tpn, n_tpn, nstep_dones, demo_selfgens)
                 # Update the priorities in the replay buffer
                 if args.prioritized:
                     # Add bonus to demo transition priorities
