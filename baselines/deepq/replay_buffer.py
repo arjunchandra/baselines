@@ -23,12 +23,18 @@ class ReplayBuffer(object):
         self._maxsize = size
         self._next_idx = 0
         self._demosize = dsize
+        self._traj_id = 0
+
 
     def __len__(self):
         return len(self._storage)
 
     def add(self, obs_t, action, reward, obs_tp1, done):
-        data = (obs_t, action, reward, obs_tp1, done)
+        data = (obs_t, action, reward, obs_tp1, done, self._traj_id)
+
+        if done:
+            # To prevent the trajectory id to grow to infititum, we reset it from time to time.
+            self._traj_id = (self._traj_id +1) % self._maxsize
 
         if self._next_idx >= len(self._storage):
             self._storage.append(data)
@@ -43,7 +49,7 @@ class ReplayBuffer(object):
         obses_t, actions, rewards, obses_tp1, dones = [], [], [], [], []
         for i in idxes:
             data = self._storage[i]
-            obs_t, action, reward, obs_tp1, done = data
+            obs_t, action, reward, obs_tp1, done, traj_id = data
             obses_t.append(np.array(obs_t, copy=False))
             actions.append(np.array(action, copy=False))
             rewards.append(reward)
@@ -57,7 +63,7 @@ class ReplayBuffer(object):
         #n_step = n_step - 1 # nth step is bootstrapped
         for i in idxes:
             data = self._storage[i]
-            obs_t, action, reward, obs_tp1, done = data
+            obs_t, action, reward, obs_tp1, done, traj_id = data
             obses_t.append(np.array(obs_t, copy=False))
             actions.append(np.array(action, copy=False))
             rewards.append(reward)
@@ -91,7 +97,7 @@ class ReplayBuffer(object):
                         
                         data_tp1 = self._storage[_j]
                         # Unfinished trajectory -- exit loop
-                        if (data[3] != data_tp1[0]):
+                        if (data[5] != data_tp1[5]):
                             n_step_rewards_i.extend([0.0]*(n_step - _n_step))
                             obses_tpn_i = data[3]
                             n_is_i = _n_step

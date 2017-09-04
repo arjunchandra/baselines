@@ -1,3 +1,4 @@
+import tables
 import argparse
 import gym
 import numpy as np
@@ -24,7 +25,7 @@ from baselines.common.misc_util import (
 from baselines.common.schedules import LinearSchedule, PiecewiseSchedule
 # when updating this to non-deperecated ones, it is important to
 # copy over LazyFrames
-from baselines.common.atari_wrappers_deprecated import wrap_dqn
+from baselines.common.atari_wrappers_deprecated import wrap_dqn, LazyFrames
 from baselines.common.azure_utils import Container
 from .model import model, dueling_model
 
@@ -62,7 +63,7 @@ def parse_args():
     boolean_flag(parser, "load-on-start", default=True, help="if true and model was previously saved then training will be resumed")
     # Demonstration
     boolean_flag(parser, "demo", default=False, help="whether or not to use demonstration data")
-    boolean_flag(parser, "demo_db", default=False, help="whether or not to get demonstration data from db")
+    parser.add_argument("--demo_db", type=str, default=None, help="path to hdf5 file containing demo data")
     parser.add_argument("--demo-trans-size", type=int, default=int(8000), help="number of demo transitions")
     parser.add_argument("--demo-model-dir", type=str, default=None, help="load demonstration model from this directory")
     boolean_flag(parser, "stochastic", default=True, help="whether or not to use stochastic actions according to models eps value")
@@ -83,7 +84,7 @@ def make_env(game_name):
     return env, monitored_env
 
 
-def maybe_save_model(savedir, container, state):
+def maybe_save_model(savedir, container, state, normal_training=True):
     """This function checkpoints the model and state of the training algorithm."""
     if savedir is None:
         return
@@ -92,10 +93,12 @@ def maybe_save_model(savedir, container, state):
     U.save_state(os.path.join(savedir, model_dir, "saved"))
     if container is not None:
         container.put(os.path.join(savedir, model_dir), model_dir)
-    relatively_safe_pickle_dump(state, os.path.join(savedir, 'training_state.pkl.zip'), compression=True)
+    if normal_training:
+        relatively_safe_pickle_dump(state, os.path.join(savedir, 'training_state.pkl.zip'), compression=True)
     if container is not None:
         container.put(os.path.join(savedir, 'training_state.pkl.zip'), 'training_state.pkl.zip')
-    relatively_safe_pickle_dump(state["monitor_state"], os.path.join(savedir, 'monitor_state.pkl'))
+    if normal_training:
+        relatively_safe_pickle_dump(state["monitor_state"], os.path.join(savedir, 'monitor_state.pkl'))
     if container is not None:
         container.put(os.path.join(savedir, 'monitor_state.pkl'), 'monitor_state.pkl')
     logger.log("Saved model in {} seconds\n".format(time.time() - start_time))
@@ -150,7 +153,7 @@ if __name__ == '__main__':
         env = gym.wrappers.Monitor(env, os.path.join(savedir, 'gym_monitor'), force=True)
 
     if savedir:
-        # os.makedirs(savedir, exist_ok=True)
+        os.makedirs(savedir, exist_ok=True)
         with open(os.path.join(savedir, 'args.json'), 'w') as f:
             json.dump(vars(args), f)
 
@@ -175,14 +178,19 @@ if __name__ == '__main__':
         if args.demo:            
             # Fill replay buffer with demonstration data
             if args.demo_db:
-                # Use demo data in db (not implemented!)
-                # connect to db
-                # repeat:
-                # fetch (s, a, r, s, done) transition
-                # replay_buffer.add(obs, action, rew, new_obs, float(done))
-                # until args.demo_trans_size transitions added
-                logger.log("Needs to be implemented. See comments.")
-                exit(1)
+                logger.log("Adding demonstration data to replay buffer.")
+                if args.demo_db is not None:
+                    hdf5_file = tables.open_file(args.demo_db, mode='r')
+                    max_demo_size = hdf5_file.root.obs.shape[0]
+
+                    bsize = min(1000, max_demo_size)
+                    for i in range(0, min(max_demo_size, args.demo_trans_size), bsize):
+                        obs = hdf5_file.root.obs[i:(i + bsize + 1)]
+                        act_rews = hdf5_file.root.act_rew_done[i:(i + bsize + 1)]
+                        for j in range(obs.shape[0] - 1):
+                            replay_buffer.add(LazyFrames([obs[j].tolist()]), act_rews[j][0], act_rews[j][1], LazyFrames([obs[j + 1].tolist()]), float(act_rews[j][2]))
+                        logger.log("Added {} new samples.".format(obs.shape[0]))
+
             else:
                 # Use pre-trained model to get demo data
                 act = deepq.build_act(
@@ -237,6 +245,48 @@ if __name__ == '__main__':
             num_iters, replay_buffer = state["num_iters"], state["replay_buffer"],
             monitored_env.set_state(state["monitor_state"])
 
+        def train_from_replay_buffer():
+            # Sample a bunch of transitions from replay buffer
+            if args.prioritized:
+                # experience = replay_buffer.sample(args.batch_size, beta=beta_schedule.value(num_iters))
+                # (obses_t, actions, rewards, obses_tp1, dones, weights, batch_idxes) = experience
+                experience = replay_buffer.sample_nstep(args.batch_size, beta=beta_schedule.value(num_iters),
+                                                        n_step=args.n_step)
+                (obses_t, actions, rewards, obses_tp1, dones, nstep_rewards, obses_tpn, n_tpn, nstep_dones, weights,
+                 batch_idxes, demo_selfgens) = experience
+                # print(nstep_rewards, obses_tpn, n_tpn)
+            else:
+                # obses_t, actions, rewards, obses_tp1, dones = replay_buffer.sample(args.batch_size)
+                experience = replay_buffer.sample_nstep(args.batch_size, n_step=args.n_step)
+                obses_t, actions, rewards, obses_tp1, dones, nstep_rewards, obses_tpn, n_tpn, nstep_dones, demo_selfgens = experience
+                weights = np.ones_like(rewards)
+            # Minimize the error in Bellman's equation (+ demo losses) and compute TD-error
+            # td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights)
+            td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights, nstep_rewards, obses_tpn, n_tpn,
+                              nstep_dones, demo_selfgens)
+            # Update the priorities in the replay buffer
+            if args.prioritized:
+                # Add bonus to demo transition priorities
+                p_eps = np.array([set_p_eps(idx) for idx in batch_idxes])
+                new_priorities = np.abs(td_errors) + p_eps
+                replay_buffer.update_priorities(batch_idxes, new_priorities)
+
+        # Pre-train agent using only demonstration data
+        logger.log("Pretraining...")
+        for t in range(args.pre_train_steps):
+            if t % 2 == 0:
+                logger.log("Pre-train step: {}".format(t))
+            train_from_replay_buffer()
+
+            # Update target network.
+            if t % args.target_update_freq == 0:
+                update_target()
+
+        logger.log("Pretraining finished! Saving model...")
+        maybe_save_model(savedir, container, {
+            'num_iters': 'pretrained',
+            }, normal_training=False)
+
         start_time, start_steps = None, None
         steps_per_iter = RunningAvg(0.999)
         iteration_time_est = RunningAvg(0.999)
@@ -245,69 +295,49 @@ if __name__ == '__main__':
         reset = True
 
         # Main trianing loop
+        logger.log("Interacting with env")
         while True:
             num_iters += 1
             num_iters_pre_train += 1
             num_iters_since_reset += 1
 
-            if num_iters_pre_train > args.pre_train_steps:
-                # Take action and store transition in the replay buffer.
-                kwargs = {}
-                if not args.param_noise:
-                    update_eps = exploration.value(num_iters)
-                    update_param_noise_threshold = 0.
-                else:
-                    if args.param_noise_reset_freq > 0 and num_iters_since_reset > args.param_noise_reset_freq:
-                        # Reset param noise policy since we have exceeded the maximum number of steps without a reset.
-                        reset = True
-    
-                    update_eps = 0.01  # ensures that we cannot get stuck completely
-                    if args.param_noise_threshold >= 0.:
-                        update_param_noise_threshold = args.param_noise_threshold
-                    else:
-                        # Compute the threshold such that the KL divergence between perturbed and non-perturbed
-                        # policy is comparable to eps-greedy exploration with eps = exploration.value(t).
-                        # See Appendix C.1 in Parameter Space Noise for Exploration, Plappert et al., 2017
-                        # for detailed explanation.
-                        update_param_noise_threshold = -np.log(1. - exploration.value(num_iters) + exploration.value(num_iters) / float(env.action_space.n))
-                    kwargs['reset'] = reset
-                    kwargs['update_param_noise_threshold'] = update_param_noise_threshold
-                    kwargs['update_param_noise_scale'] = (num_iters % args.param_noise_update_freq == 0)
-    
-                action = act(np.array(obs)[None], update_eps=update_eps, **kwargs)[0]
-                reset = False
-                new_obs, rew, done, info = env.step(action)
-                replay_buffer.add(obs, action, rew, new_obs, float(done))
-                obs = new_obs
-                if done:
-                    num_iters_since_reset = 0
-                    obs = env.reset()
+            # Take action and store transition in the replay buffer.
+            kwargs = {}
+            if not args.param_noise:
+                update_eps = exploration.value(num_iters)
+                update_param_noise_threshold = 0.
+            else:
+                if args.param_noise_reset_freq > 0 and num_iters_since_reset > args.param_noise_reset_freq:
+                    # Reset param noise policy since we have exceeded the maximum number of steps without a reset.
                     reset = True
 
-            if ((num_iters_pre_train <= args.pre_train_steps) or 
-            ((num_iters > max(5 * args.batch_size, args.replay_buffer_size // 20) and
-                    num_iters % args.learning_freq == 0))):
-                # Sample a bunch of transitions from replay buffer
-                if args.prioritized:
-                    # experience = replay_buffer.sample(args.batch_size, beta=beta_schedule.value(num_iters))
-                    # (obses_t, actions, rewards, obses_tp1, dones, weights, batch_idxes) = experience
-                    experience = replay_buffer.sample_nstep(args.batch_size, beta=beta_schedule.value(num_iters), n_step=args.n_step)
-                    (obses_t, actions, rewards, obses_tp1, dones, nstep_rewards, obses_tpn, n_tpn, nstep_dones, weights, batch_idxes, demo_selfgens) = experience
-                    # print(nstep_rewards, obses_tpn, n_tpn)
+                update_eps = 0.01  # ensures that we cannot get stuck completely
+                if args.param_noise_threshold >= 0.:
+                    update_param_noise_threshold = args.param_noise_threshold
                 else:
-                    # obses_t, actions, rewards, obses_tp1, dones = replay_buffer.sample(args.batch_size)
-                    experience = replay_buffer.sample_nstep(args.batch_size, n_step=args.n_step)
-                    obses_t, actions, rewards, obses_tp1, dones, nstep_rewards, obses_tpn, n_tpn, nstep_dones, demo_selfgens = experience
-                    weights = np.ones_like(rewards)
-                # Minimize the error in Bellman's equation (+ demo losses) and compute TD-error
-                # td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights)
-                td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights, nstep_rewards, obses_tpn, n_tpn, nstep_dones, demo_selfgens)
-                # Update the priorities in the replay buffer
-                if args.prioritized:
-                    # Add bonus to demo transition priorities
-                    p_eps =np.array([set_p_eps(idx) for idx in batch_idxes])
-                    new_priorities = np.abs(td_errors) + p_eps
-                    replay_buffer.update_priorities(batch_idxes, new_priorities)
+                    # Compute the threshold such that the KL divergence between perturbed and non-perturbed
+                    # policy is comparable to eps-greedy exploration with eps = exploration.value(t).
+                    # See Appendix C.1 in Parameter Space Noise for Exploration, Plappert et al., 2017
+                    # for detailed explanation.
+                    update_param_noise_threshold = -np.log(1. - exploration.value(num_iters) + exploration.value(num_iters) / float(env.action_space.n))
+                kwargs['reset'] = reset
+                kwargs['update_param_noise_threshold'] = update_param_noise_threshold
+                kwargs['update_param_noise_scale'] = (num_iters % args.param_noise_update_freq == 0)
+
+            action = act(np.array(obs)[None], update_eps=update_eps, **kwargs)[0]
+            reset = False
+            new_obs, rew, done, info = env.step(action)
+            replay_buffer.add(obs, action, rew, new_obs, float(done))
+            obs = new_obs
+            if done:
+                num_iters_since_reset = 0
+                obs = env.reset()
+                reset = True
+
+            if (num_iters > max(5 * args.batch_size, args.replay_buffer_size // 20) and
+                    num_iters % args.learning_freq == 0):
+                logger.log("Training from replay buffer")
+                train_from_replay_buffer()
 
             # Update target network.
             if num_iters % args.target_update_freq == 0:
