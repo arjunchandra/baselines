@@ -27,7 +27,9 @@ from baselines.common.schedules import LinearSchedule, PiecewiseSchedule
 # copy over LazyFrames
 from baselines.common.atari_wrappers_deprecated import wrap_dqn, LazyFrames
 from baselines.common.azure_utils import Container
-from .model import model, dueling_model
+from .model import model, dueling_model, mlp_model
+from baselines.deepq.experiments.environments.corridor import ProcessObservation
+
 
 
 def parse_args():
@@ -35,6 +37,9 @@ def parse_args():
     # Environment
     parser.add_argument("--env", type=str, default="Pong", help="name of the game")
     parser.add_argument("--seed", type=int, default=42, help="which seed to use")
+    parser.add_argument('--n_action_repeat', type=int, default=1, help='The number of actions to repeat')
+    parser.add_argument('--max_random_start', type=int, default=30, help='The maximum number of NOOP actions at the beginning of an episode')
+    boolean_flag(parser, "display", default=True, help='Whether to do display the game screen or not')
     # Core DQN parameters
     parser.add_argument("--replay-buffer-size", type=int, default=int(1e6), help="replay buffer size")
     parser.add_argument("--lr", type=float, default=1e-4, help="learning rate for Adam optimizer")
@@ -46,6 +51,7 @@ def parse_args():
     parser.add_argument("--param-noise-reset-freq", type=int, default=10000, help="maximum number of steps to take per episode before re-perturbing the exploration policy")
     parser.add_argument("--param-noise-threshold", type=float, default=0.05, help="the desired KL divergence between perturbed and non-perturbed policy. set to < 0 to use a KL divergence relative to the eps-greedy exploration")
     # Bells and whistles
+    parser.add_argument("--mlp-hiddens", type=str, default=[], help="Nr. of hidden layers if using MLP Q network")
     boolean_flag(parser, "double-q", default=True, help="whether or not to use double q learning")
     boolean_flag(parser, "dueling", default=False, help="whether or not to use dueling model")
     boolean_flag(parser, "prioritized", default=False, help="whether or not to use prioritized replay buffer")
@@ -77,10 +83,15 @@ def parse_args():
     return parser.parse_args()
 
 
-def make_env(game_name):
-    env = gym.make(game_name + "NoFrameskip-v4")
-    monitored_env = SimpleMonitor(env)  # puts rewards and number of steps in info, before environment is wrapped
-    env = wrap_dqn(monitored_env)  # applies a bunch of modification to simplify the observation space (downsample, make b/w)
+def make_env(env_name):
+    if any(name in env_name for name in ['Corridor', 'FrozenLake']):
+        env = gym.make(args.env)
+        monitored_env = SimpleMonitor(env)
+        env = ProcessObservation(env)
+    else:
+        env = gym.make(env_name + "NoFrameskip-v4")
+        monitored_env = SimpleMonitor(env)  # puts rewards and number of steps in info, before environment is wrapped
+        env = wrap_dqn(monitored_env)  # applies a bunch of modification to simplify the observation space (downsample, make b/w)
     return env, monitored_env
 
 
@@ -127,7 +138,16 @@ def maybe_load_model(savedir, container):
 
 if __name__ == '__main__':
     args = parse_args()
-    
+
+    args.mlp_hiddens = eval(args.mlp_hiddens)
+    if not args.demo:
+        args.demo_trans_size = 0
+
+    toy_env = False
+    if any(name in args.env for name in ['Corridor', 'FrozenLake']):
+        toy_env = True
+
+
     # Parse savedir and azure container.
     savedir = args.save_dir
     if savedir is None:
@@ -179,18 +199,17 @@ if __name__ == '__main__':
             # Fill replay buffer with demonstration data
             if args.demo_db:
                 logger.log("Adding demonstration data to replay buffer.")
-                if args.demo_db is not None:
-                    hdf5_file = tables.open_file(args.demo_db, mode='r')
-                    max_demo_size = hdf5_file.root.obs.shape[0]
+                hdf5_file = tables.open_file(args.demo_db, mode='r')
+                max_demo_size = hdf5_file.root.obs.shape[0]
 
-                    bsize = min(1000, max_demo_size)
-                    for i in range(0, min(max_demo_size, args.demo_trans_size), bsize):
-                        obs = hdf5_file.root.obs[i:(i + bsize + 1)]
-                        act_rews = hdf5_file.root.act_rew_done[i:(i + bsize + 1)]
-                        for j in range(obs.shape[0] - 1):
-                            replay_buffer.add(LazyFrames([obs[j].tolist()]), act_rews[j][0], act_rews[j][1], LazyFrames([obs[j + 1].tolist()]), float(act_rews[j][2]))
-                        logger.log("Added {} new samples.".format(obs.shape[0]))
-
+                bsize = min(1000, max_demo_size)
+                for i in range(0, min(max_demo_size, args.demo_trans_size), bsize):
+                    obs = hdf5_file.root.obs[i:(i + bsize + 1)]
+                    act_rews = hdf5_file.root.act_rew_done[i:(i + bsize + 1)]
+                    for j in range(obs.shape[0] - 1):
+                        replay_buffer.add(LazyFrames([obs[j].tolist()]), act_rews[j][0], act_rews[j][1], LazyFrames([obs[j + 1].tolist()]), float(act_rews[j][2]))
+                    logger.log("Added {} new samples.".format(obs.shape[0]))
+                hdf5_file.close()
             else:
                 # Use pre-trained model to get demo data
                 act = deepq.build_act(
@@ -213,9 +232,12 @@ if __name__ == '__main__':
                         obs = env.reset()
 
         # Create training graph
-        def model_wrapper(img_in, num_actions, scope, **kwargs):
-            actual_model = dueling_model if args.dueling else model
-            return actual_model(img_in, num_actions, scope, layer_norm=args.layer_norm, **kwargs)
+        def model_wrapper(obs_in, num_actions, scope, **kwargs):
+            if toy_env:
+                return mlp_model(obs_in, num_actions, scope, layer_norm=args.layer_norm, **kwargs)
+            else:
+                actual_model = dueling_model if args.dueling else model
+                return actual_model(obs_in, num_actions, scope, layer_norm=args.layer_norm, **kwargs)
         act, train, update_target, debug = deepq.build_train(
             make_obs_ph=lambda name: U.Uint8Input(env.observation_space.shape, name=name),
             q_func=model_wrapper,
@@ -231,13 +253,19 @@ if __name__ == '__main__':
             l2_loss_coeff=args.l2_loss_coeff, 
             n_step_loss_coeff=args.n_step_loss_coeff,
             expert_margin=args.expert_margin,
-            n_step=args.n_step
+            n_step=args.n_step,
+            hiddens=args.mlp_hiddens
         )
-
         U.initialize()
         update_target()
         num_iters = 0
         num_iters_pre_train = 0
+        info = {}
+        def elapsed_steps():
+            if toy_env:
+                return num_iters
+            else:
+                return info['steps']
         
         # Load the model
         state = maybe_load_model(savedir, container)
@@ -271,21 +299,23 @@ if __name__ == '__main__':
                 new_priorities = np.abs(td_errors) + p_eps
                 replay_buffer.update_priorities(batch_idxes, new_priorities)
 
-        # Pre-train agent using only demonstration data
-        logger.log("Pretraining...")
-        for t in range(args.pre_train_steps):
-            if t % 2 == 0:
-                logger.log("Pre-train step: {}".format(t))
-            train_from_replay_buffer()
+        if args.demo:
+            # Pre-train agent using only demonstration data
+            logger.log("Pretraining...")
+            for t in range(args.pre_train_steps):
+                if t % 1000 == 0:
+                    logger.log("Pre-training step " + str(t) + " of " + str(
+                        args.pre_train_steps) + " complete")
+                train_from_replay_buffer()
 
-            # Update target network.
-            if t % args.target_update_freq == 0:
-                update_target()
+                # Update target network.
+                if t % args.target_update_freq == 0:
+                    update_target()
 
-        logger.log("Pretraining finished! Saving model...")
-        maybe_save_model(savedir, container, {
-            'num_iters': 'pretrained',
-            }, normal_training=False)
+            logger.log("Pretraining finished! Saving model...")
+            maybe_save_model(savedir, container, {
+                'num_iters': 'pretrained',
+                }, normal_training=False)
 
         start_time, start_steps = None, None
         steps_per_iter = RunningAvg(0.999)
@@ -293,12 +323,12 @@ if __name__ == '__main__':
         obs = env.reset()
         num_iters_since_reset = 0
         reset = True
+        episode_rewards = [0.0]
 
         # Main trianing loop
         logger.log("Interacting with env")
         while True:
             num_iters += 1
-            num_iters_pre_train += 1
             num_iters_since_reset += 1
 
             # Take action and store transition in the replay buffer.
@@ -329,8 +359,11 @@ if __name__ == '__main__':
             new_obs, rew, done, info = env.step(action)
             replay_buffer.add(obs, action, rew, new_obs, float(done))
             obs = new_obs
+
+            episode_rewards[-1] += rew
             if done:
                 num_iters_since_reset = 0
+                episode_rewards.append(0.0)
                 obs = env.reset()
                 reset = True
 
@@ -344,40 +377,41 @@ if __name__ == '__main__':
                 update_target()
 
             if start_time is not None:
-                steps_per_iter.update(info['steps'] - start_steps)
+                steps_per_iter.update(elapsed_steps() - start_steps)
                 iteration_time_est.update(time.time() - start_time)
-            start_time, start_steps = time.time(), info["steps"]
+
+            start_time, start_steps = time.time(), elapsed_steps()
 
             # Save the model and training state.
-            if num_iters > 0 and (num_iters % args.save_freq == 0 or info["steps"] > args.num_steps):
+            if num_iters > 0 and (num_iters % args.save_freq == 0 or elapsed_steps() > args.num_steps):
                 maybe_save_model(savedir, container, {
                     'replay_buffer': replay_buffer,
                     'num_iters': num_iters,
                     'monitor_state': monitored_env.get_state(),
                 })
 
-            if info["steps"] > args.num_steps:
+            if elapsed_steps() > args.num_steps:
                 break
 
-            if num_iters_pre_train > args.pre_train_steps:
-                if done:
-                    steps_left = args.num_steps - info["steps"]
-                    completion = np.round(info["steps"] / args.num_steps, 1)
-    
-                    logger.record_tabular("% completion", completion)
-                    logger.record_tabular("steps", info["steps"])
-                    logger.record_tabular("iters", num_iters)
+            if done:
+                steps_left = args.num_steps - elapsed_steps()
+                completion = np.round(elapsed_steps() / args.num_steps, 1)
+
+                logger.record_tabular("% completion", completion)
+                logger.record_tabular("steps", elapsed_steps())
+                logger.record_tabular("iters", num_iters)
+                if toy_env:
+                    logger.record_tabular("episodes", len(episode_rewards))
+                    logger.record_tabular("reward (100 epi mean)", round(np.mean(episode_rewards[-101:-1]), 1))
+                else:
                     logger.record_tabular("episodes", len(info["rewards"]))
                     logger.record_tabular("reward (100 epi mean)", np.mean(info["rewards"][-100:]))
-                    logger.record_tabular("exploration", exploration.value(num_iters))
-                    if args.prioritized:
-                        logger.record_tabular("max priority", replay_buffer._max_priority)
-                    fps_estimate = (float(steps_per_iter) / (float(iteration_time_est) + 1e-6)
-                                    if steps_per_iter._value is not None else "calculating...")
-                    logger.dump_tabular()
-                    logger.log()
-                    logger.log("ETA: " + pretty_eta(int(steps_left / fps_estimate)))
-                    logger.log()
-            else:
-                if num_iters_pre_train % 50000 == 0:
-                    logger.log("Pre-training step " + str(num_iters_pre_train) + " of " + str(args.pre_train_steps) + " complete")
+                logger.record_tabular("exploration", exploration.value(num_iters))
+                if args.prioritized:
+                    logger.record_tabular("max priority", replay_buffer._max_priority)
+                fps_estimate = (float(steps_per_iter) / (float(iteration_time_est) + 1e-6)
+                                if steps_per_iter._value is not None else "calculating...")
+                logger.dump_tabular()
+                logger.log()
+                logger.log("ETA: " + pretty_eta(int(steps_left / fps_estimate)))
+                logger.log()

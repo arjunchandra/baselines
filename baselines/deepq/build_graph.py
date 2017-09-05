@@ -112,7 +112,7 @@ def default_param_noise_filter(var):
     return False
 
 
-def build_act(make_obs_ph, q_func, num_actions, scope="deepq", reuse=None):
+def build_act(make_obs_ph, q_func, num_actions, scope="deepq", reuse=None, hiddens=[]):
     """Creates the act function:
 
     Parameters
@@ -149,7 +149,7 @@ def build_act(make_obs_ph, q_func, num_actions, scope="deepq", reuse=None):
 
         eps = tf.get_variable("eps", (), initializer=tf.constant_initializer(0))
 
-        q_values = q_func(observations_ph.get(), num_actions, scope="q_func")
+        q_values = q_func(observations_ph.get(), num_actions, scope="q_func", hiddens=hiddens)
         deterministic_actions = tf.argmax(q_values, axis=1)
 
         batch_size = tf.shape(observations_ph.get())[0]
@@ -166,7 +166,8 @@ def build_act(make_obs_ph, q_func, num_actions, scope="deepq", reuse=None):
         return act
 
 
-def build_act_with_param_noise(make_obs_ph, q_func, num_actions, scope="deepq", reuse=None, param_noise_filter_func=None):
+def build_act_with_param_noise(make_obs_ph, q_func, num_actions, scope="deepq", reuse=None,
+                               param_noise_filter_func=None, hiddens=[]):
     """Creates the act function with support for parameter space noise exploration (https://arxiv.org/abs/1706.01905):
 
     Parameters
@@ -215,10 +216,10 @@ def build_act_with_param_noise(make_obs_ph, q_func, num_actions, scope="deepq", 
         param_noise_threshold = tf.get_variable("param_noise_threshold", (), initializer=tf.constant_initializer(0.05), trainable=False)
 
         # Unmodified Q.
-        q_values = q_func(observations_ph.get(), num_actions, scope="q_func")
+        q_values = q_func(observations_ph.get(), num_actions, scope="q_func", hiddens=hiddens)
 
         # Perturbable Q used for the actual rollout.
-        q_values_perturbed = q_func(observations_ph.get(), num_actions, scope="perturbed_q_func")
+        q_values_perturbed = q_func(observations_ph.get(), num_actions, scope="perturbed_q_func", hiddens=hiddens)
         # We have to wrap this code into a function due to the way tf.cond() works. See
         # https://stackoverflow.com/questions/37063952/confused-by-the-behavior-of-tf-cond for
         # a more detailed discussion.
@@ -241,7 +242,7 @@ def build_act_with_param_noise(make_obs_ph, q_func, num_actions, scope="deepq", 
         # Set up functionality to re-compute `param_noise_scale`. This perturbs yet another copy
         # of the network and measures the effect of that perturbation in action space. If the perturbation
         # is too big, reduce scale of perturbation, otherwise increase.
-        q_values_adaptive = q_func(observations_ph.get(), num_actions, scope="adaptive_q_func")
+        q_values_adaptive = q_func(observations_ph.get(), num_actions, scope="adaptive_q_func", hiddens=hiddens)
         perturb_for_adaption = perturb_vars(original_scope="q_func", perturbed_scope="adaptive_q_func")
         kl = tf.reduce_sum(tf.nn.softmax(q_values) * (tf.log(tf.nn.softmax(q_values)) - tf.log(tf.nn.softmax(q_values_adaptive))), axis=-1)
         mean_kl = tf.reduce_mean(kl)
@@ -282,7 +283,7 @@ def build_act_with_param_noise(make_obs_ph, q_func, num_actions, scope="deepq", 
 def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=None, gamma=1.0,
     double_q=True, scope="deepq", reuse=None, param_noise=False, param_noise_filter_func=None, 
     demonstration=False, margin_loss_coeff=0.0, l2_loss_coeff=0.0, n_step_loss_coeff=0.0, 
-    expert_margin=0.0, n_step=10):
+    expert_margin=0.0, n_step=10, hiddens=[]):
     """Creates the train function:
 
     Parameters
@@ -358,9 +359,9 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
     """
     if param_noise:
         act_f = build_act_with_param_noise(make_obs_ph, q_func, num_actions, scope=scope, reuse=reuse,
-            param_noise_filter_func=param_noise_filter_func)
+            param_noise_filter_func=param_noise_filter_func, hiddens=hiddens)
     else:
-        act_f = build_act(make_obs_ph, q_func, num_actions, scope=scope, reuse=reuse)
+        act_f = build_act(make_obs_ph, q_func, num_actions, scope=scope, reuse=reuse, hiddens=hiddens)
 
     with tf.variable_scope(scope, reuse=reuse):
         # set up placeholders
@@ -379,11 +380,11 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
             demo_selfgens_ph = tf.placeholder(tf.float32, [None], name="demo_self_gen_flags")
 
         # q network evaluation
-        q_t = q_func(obs_t_input.get(), num_actions, scope="q_func", reuse=True)  # reuse parameters from act
+        q_t = q_func(obs_t_input.get(), num_actions, scope="q_func", reuse=True, hiddens=hiddens)  # reuse parameters from act
         q_func_vars = U.scope_vars(U.absolute_scope_name("q_func"))
 
         # target q network evalution
-        q_tp1 = q_func(obs_tp1_input.get(), num_actions, scope="target_q_func")
+        q_tp1 = q_func(obs_tp1_input.get(), num_actions, scope="target_q_func", hiddens=hiddens)
         target_q_func_vars = U.scope_vars(U.absolute_scope_name("target_q_func"))
 
         one_hot_act = tf.one_hot(act_t_ph, num_actions)
@@ -393,8 +394,8 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
 
         # compute estimate of best possible value starting from state at t + 1
         if double_q:
-            q_tp1_using_online_net = q_func(obs_tp1_input.get(), num_actions, scope="q_func", reuse=True)
-            q_tp1_best_using_online_net = tf.arg_max(q_tp1_using_online_net, 1)
+            q_tp1_using_online_net = q_func(obs_tp1_input.get(), num_actions, scope="q_func", reuse=True, hiddens=hiddens)
+            q_tp1_best_using_online_net = tf.argmax(q_tp1_using_online_net, 1)
             q_tp1_best = tf.reduce_sum(q_tp1 * tf.one_hot(q_tp1_best_using_online_net, num_actions), 1)
         else:
             q_tp1_best = tf.reduce_max(q_tp1, 1)
@@ -411,10 +412,10 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
         if demonstration:
             print("Compiling dqfd loss")
             # target q for n-step observation
-            q_tpn = q_func(obs_tpn_input.get(), num_actions, scope="target_q_func", reuse=True)
+            q_tpn = q_func(obs_tpn_input.get(), num_actions, scope="target_q_func", reuse=True, hiddens=hiddens)
             if double_q:
-                q_tpn_using_online_net = q_func(obs_tpn_input.get(), num_actions, scope="q_func", reuse=True)
-                q_tpn_best_using_online_net = tf.arg_max(q_tpn_using_online_net, 1)
+                q_tpn_using_online_net = q_func(obs_tpn_input.get(), num_actions, scope="q_func", reuse=True, hiddens=hiddens)
+                q_tpn_best_using_online_net = tf.argmax(q_tpn_using_online_net, 1)
                 q_tpn_best = tf.reduce_sum(q_tpn * tf.one_hot(q_tpn_best_using_online_net, num_actions), 1)
             else:
                 q_tpn_best = tf.reduce_max(q_tpn, 1)

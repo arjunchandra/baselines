@@ -9,7 +9,21 @@ def layer_norm_fn(x, relu=True):
     return x
 
 
-def model(img_in, num_actions, scope, reuse=False, layer_norm=False):
+def mlp_model(inpt, num_actions, scope, reuse=False, hiddens = [], layer_norm=False):
+    with tf.variable_scope(scope, reuse=reuse):
+        out = inpt
+        with tf.variable_scope("mlp"):
+            for hidden in hiddens:
+                out = layers.fully_connected(out, num_outputs=hidden, activation_fn=None)
+                if layer_norm:
+                    out = layers.layer_norm(out, center=True, scale=True)
+                out = tf.nn.relu(out)
+        with tf.variable_scope("action_value"):
+            q_out = layers.fully_connected(out, num_outputs=num_actions, activation_fn=None)
+        return q_out
+
+
+def model(img_in, num_actions, scope, reuse=False, layer_norm=False, hiddens=[]):
     """As described in https://storage.googleapis.com/deepmind-data/assets/papers/DeepMindNature14236Paper.pdf"""
     with tf.variable_scope(scope, reuse=reuse):
         out = img_in
@@ -30,7 +44,7 @@ def model(img_in, num_actions, scope, reuse=False, layer_norm=False):
         return value_out
 
 
-def dueling_model(img_in, num_actions, scope, reuse=False, layer_norm=False):
+def dueling_model(img_in, num_actions, scope, reuse=False, layer_norm=False, hiddens=[]):
     """As described in https://arxiv.org/abs/1511.06581"""
     with tf.variable_scope(scope, reuse=reuse):
         out = img_in
