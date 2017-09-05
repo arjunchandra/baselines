@@ -12,7 +12,7 @@ prioritized_replay_beta_iters = None
 prioritized_replay_alpha=0.6
 prioritized_replay_beta0=0.4
 batch_size = 5
-n_step = 3
+n_step = 10
 max_train_steps = 1000
 
 # Create the replay buffer
@@ -116,7 +116,14 @@ def verify_buffer_sampling(o_t, a, r, o_tp1, dones, nstep_rewards, o_tpn, n_tpn,
 
 	for i, idx in enumerate(batch_idxes):
 		recover_sanity.append(sanity_buffer[idx])
-		traj_idx = sanity_buffer[idx: idx + n_tpn_list[i]]
+		# In case idx + n_tpn goes out of range of sanity_buffer
+		traj_end_idx = idx + n_tpn_list[i]
+		if traj_end_idx >= len(sanity_buffer):
+			traj_idx = sanity_buffer[idx:]
+			overshoot = traj_end_idx - len(sanity_buffer)
+			traj_idx.extend(sanity_buffer[demo_size: demo_size + overshoot])
+		else:
+			traj_idx = sanity_buffer[idx: traj_end_idx]
 		recover_sanity_nstep_rewards.append([elem[2] for elem in traj_idx[1:]]) # [1] see comment above
 		recover_sanity_o_tpn.append(traj_idx[-1][3])
 		recover_sanity_nstep_dones.append(traj_idx[-1][4])
