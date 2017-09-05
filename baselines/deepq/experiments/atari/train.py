@@ -285,7 +285,8 @@ if __name__ == '__main__':
             else:
                 # obses_t, actions, rewards, obses_tp1, dones = replay_buffer.sample(args.batch_size)
                 experience = replay_buffer.sample_nstep(args.batch_size, n_step=args.n_step)
-                obses_t, actions, rewards, obses_tp1, dones, nstep_rewards, obses_tpn, n_tpn, nstep_dones, demo_selfgens = experience
+                (obses_t, actions, rewards, obses_tp1, dones, nstep_rewards, obses_tpn, n_tpn, nstep_dones,
+                 batch_idxes, demo_selfgens) = experience
                 weights = np.ones_like(rewards)
             # Minimize the error in Bellman's equation (+ demo losses) and compute TD-error
             # td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights)

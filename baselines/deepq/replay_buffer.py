@@ -196,7 +196,7 @@ class ReplayBuffer(object):
         idxes = [random.randint(0, len(self._storage) - 1) for _ in range(batch_size)]
         encoded_trajectory = self._encode_trajectory(idxes, n_step)
         demo_selfgen = [1. if id < self._demosize else 0. for id in idxes]
-        return tuple(list(encoded_trajectory) + [demo_selfgen])
+        return tuple(list(encoded_trajectory) + [idxes, demo_selfgen])
 
 class PrioritizedReplayBuffer(ReplayBuffer):
     def __init__(self, size, dsize, alpha):
