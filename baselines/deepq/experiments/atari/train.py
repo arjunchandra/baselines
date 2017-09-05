@@ -266,7 +266,6 @@ if __name__ == '__main__':
                 return num_iters
             else:
                 return info['steps']
-        
         # Load the model
         state = maybe_load_model(savedir, container)
         if state is not None:
@@ -290,14 +289,18 @@ if __name__ == '__main__':
                 weights = np.ones_like(rewards)
             # Minimize the error in Bellman's equation (+ demo losses) and compute TD-error
             # td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights)
-            td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights, nstep_rewards, obses_tpn, n_tpn,
+            if args.demo:
+                td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights, nstep_rewards, obses_tpn, n_tpn,
                               nstep_dones, demo_selfgens)
+            else:
+                td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights)
             # Update the priorities in the replay buffer
             if args.prioritized:
                 # Add bonus to demo transition priorities
                 p_eps = np.array([set_p_eps(idx) for idx in batch_idxes])
                 new_priorities = np.abs(td_errors) + p_eps
                 replay_buffer.update_priorities(batch_idxes, new_priorities)
+
 
         if args.demo:
             # Pre-train agent using only demonstration data

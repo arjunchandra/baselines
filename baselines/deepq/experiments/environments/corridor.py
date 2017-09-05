@@ -125,7 +125,6 @@ class MyDiscreteEnv(Env):
 class ProcessObservation(ObservationWrapper):
     def __init__(self, env=None):
         super(ProcessObservation, self).__init__(env)
-        print(type(env))
 
 
     def _observation(self, obs):
