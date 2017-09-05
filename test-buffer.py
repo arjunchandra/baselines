@@ -72,6 +72,8 @@ for i in range(max_timesteps):
 		sanity_buffer.append((ob, action, reward, new_ob, float(done)))
 	if done:
 		ob = env.reset()
+	else:
+		ob = new_ob
 	# Note there's no env.render() here. But the environment still can open window and
 	# render if asked by env.monitor: it calls env.render('rgb_array') to record video.
 	# Video is not recorded every episode, see capped_cubic_video_schedule for details.
